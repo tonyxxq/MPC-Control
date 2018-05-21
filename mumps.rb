@@ -59,7 +59,7 @@ class Mumps < Formula
     if OS.mac?
       # Building dylibs with mpif90 causes segfaults on 10.8 and 10.10. Use gfortran.
       shlibs_args = ["LIBEXT=.dylib",
-                     "AR=#{ENV["FC"]} -dynamiclib -Wl,-install_name -Wl,#{lib}/$(notdir $@) -undefined dynamic_lookup -o "]
+                     "AR=#{ENV["FC"]} -dynamiclib -Wl, -install_name -Wl,#{lib}/$(notdir $@) -undefined dynamic_lookup -o "]
     else
       shlibs_args = ["LIBEXT=.so",
                      "AR=$(FL) -shared -Wl,-soname -Wl,$(notdir $@) -o "]
