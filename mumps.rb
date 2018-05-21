@@ -35,7 +35,7 @@ class Mumps < Formula
   depends_on "open-mpi" => [:cc, :cxx, :f90, :recommended]
   depends_on "openblas" => OS.mac? ? :optional : :recommended
   depends_on "veclibfort" if build.without?("openblas") && OS.mac?
-  depends_on :fortran
+  depends_on "gcc"
 
   if build.with? "open-mpi"
     if OS.mac?
