@@ -32,12 +32,12 @@ class Mumps < Formula
 
   bottle :disable, "needs to be rebuilt with latest open-mpi"
 
-  depends_on "open-mpi" => [:cc, :cxx, :f90, :recommended]
+  depends_on :mpi => [:cc, :cxx, :f90, :recommended]
   depends_on "openblas" => OS.mac? ? :optional : :recommended
   depends_on "veclibfort" if build.without?("openblas") && OS.mac?
-  depends_on "gcc"
+  depends_on :fortran
 
-  if build.with? "open-mpi"
+  if build.with? "mpi"
     if OS.mac?
       depends_on "scalapack" => build.with?("openblas") ? ["with-openblas"] : []
     else
@@ -56,11 +56,14 @@ class Mumps < Formula
 
   def install
     make_args = ["RANLIB=echo"]
-
-    
-    shlibs_args = ["LIBEXT=.so",
+    if OS.mac?
+      # Building dylibs with mpif90 causes segfaults on 10.8 and 10.10. Use gfortran.
+      shlibs_args = ["LIBEXT=.dylib",
+                     "AR=#{ENV["FC"]} -dynamiclib -Wl,-install_name -Wl,#{lib}/$(notdir $@) -undefined dynamic_lookup -o "]
+    else
+      shlibs_args = ["LIBEXT=.so",
                      "AR=$(FL) -shared -Wl,-soname -Wl,$(notdir $@) -o "]
-
+    end
     make_args += ["OPTF=-O", "CDEFS=-DAdd_"]
     orderingsf = "-Dpord"
 
