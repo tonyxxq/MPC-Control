@@ -1,0 +1,1 @@
+/usr/bin/c++   -Wall   CMakeFiles/mpc.dir/MPC.cpp.o CMakeFiles/mpc.dir/main.cpp.o  -o mpc  -L/usr/local/lib -lipopt -lz -lssl -luv -luWS -Wl,-rpath,/usr/local/lib 
