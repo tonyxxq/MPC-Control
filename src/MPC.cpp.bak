@@ -159,7 +159,7 @@ vector<vector<double>> MPC::Solve(Eigen::VectorXd x0, Eigen::VectorXd coeffs) {
 		vars_lowerbound[i] = -1.0;
 		vars_upperbound[i] = 1.0;
 	}
-	// 前一次计算的驱动器输入作为约束
+	// 前一次计算的驱动器输入作为上下界
 	vars_lowerbound[a_start] = a_prev;
 	vars_upperbound[a_start] = a_prev;
 	vars_lowerbound[delta_start] = delta_prev;
