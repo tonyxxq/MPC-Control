@@ -7,7 +7,7 @@ using CppAD::AD;
 
 // 设置预测状态点的个数和两个相邻状态点之间的时间间隔
 size_t N = 20;
-double dt = 0.05;
+double dt = 0.05; // 50ms
 
 // 设置汽车头到车辆重心之间的距离
 const double Lf = 2.67;

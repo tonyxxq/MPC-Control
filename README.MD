@@ -1,5 +1,279 @@
 ## MPC-Control
 
+for reviewer:
+
+1. MPC model in detail.
+
+   - init states and reference trajectory
+
+     ```c++
+      Eigen::MatrixXd transformGlobal2Vehicle(double x, double y, double psi,
+     		const vector<double> & ptsx, const vector<double> & ptsy) {
+     	assert(ptsx.size() == ptsy.size());
+     	unsigned len = ptsx.size();
+     	auto waypoints = Eigen::MatrixXd(2, len);
+     	for (auto i = 0; i < len; ++i) {
+     		waypoints(0, i) = cos(psi) * (ptsx[i] - x) + sin(psi) * (ptsy[i] - y);
+     		waypoints(1, i) = -sin(psi) * (ptsx[i] - x) + cos(psi) * (ptsy[i] - y);
+     	}
+     	return waypoints;
+     }
+     ```
+
+     ```c++
+     double px = j[1]["x"];
+     double py = j[1]["y"];
+     double psi = j[1]["psi"];
+     double v = j[1]["speed"];
+     // Conversion of world coordinates to automobile coordinates
+     Eigen::MatrixXd waypoints = transformGlobal2Vehicle(px, py, psi, ptsx, ptsy);
+     Eigen::VectorXd Ptsx = waypoints.row(0);
+     Eigen::VectorXd Ptsy = waypoints.row(1);
+     auto coeffs = polyfit(Ptsx, Ptsy, 3);
+     double cte = evaluateCte(coeffs);
+     double epsi = evaluateEpsi(coeffs);
+     Eigen::VectorXd state(6);
+     state << 0, 0, 0, v, cte, epsi;
+     ```
+
+
+   - According to the current state and reference path, the predicted trajectory includes N control points, time points dt at each point, and total time T=N*dt.
+
+     ```c++
+     size_t N = 25;
+     double dt = 0.05;  // 50ms
+     ```
+
+   -  set bounds of variables and equations
+
+     ```c++
+     double x = x0[0];
+     	double y = x0[1];
+     	double psi = x0[2];
+     	double v = x0[3];
+     	double cte = x0[4];
+     	double epsi = x0[5];
+
+     	// 独立状态的个数，注意：驱动器的输入（N - 1）* 2
+     	size_t n_vars = N * 6 + (N - 1) * 2;
+     	// 约束条件的个数
+     	size_t n_constraints = N * 6;
+
+     	// 除了初始值，初始化每一个状态为0
+     	Dvector vars(n_vars);
+     	for (int i = 0; i < n_vars; i++) {
+     		vars[i] = 0.0;
+     	}
+     	vars[x_start] = x;
+     	vars[y_start] = y;
+     	vars[psi_start] = psi;
+     	vars[v_start] = v;
+     	vars[cte_start] = cte;
+     	vars[epsi_start] = epsi;
+
+     	// 设置每一个状态变量的最大和最小值
+     	// 【1】设置非驱动输入的最大和最小值
+     	// 【2】设置方向盘转动角度范围-25—25度
+     	// 【3】加速度的范围-1—1
+     	Dvector vars_lowerbound(n_vars);
+     	Dvector vars_upperbound(n_vars);
+     	for (int i = 0; i < delta_start; i++) {
+     		vars_lowerbound[i] = -1.0e19;
+     		vars_upperbound[i] = 1.0e19;
+     	}
+     	for (int i = delta_start; i < a_start; i++) {
+     		vars_lowerbound[i] = -0.436332;
+     		vars_upperbound[i] = 0.436332;
+     	}
+     	for (int i = a_start; i < n_vars; i++) {
+     		vars_lowerbound[i] = -1.0;
+     		vars_upperbound[i] = 1.0;
+     	}
+     	// 前一次计算的驱动器输入作为约束
+     	vars_lowerbound[a_start] = a_prev;
+     	vars_upperbound[a_start] = a_prev;
+     	vars_lowerbound[delta_start] = delta_prev;
+     	vars_upperbound[delta_start] = delta_prev;
+
+     	// 设置约束条件的的最大和最小值，除了初始状态其他约束都为0
+     	Dvector constraints_lowerbound(n_constraints);
+     	Dvector constraints_upperbound(n_constraints);
+     	for (int i = 0; i < n_constraints; i++) {
+     		constraints_lowerbound[i] = 0;
+     		constraints_upperbound[i] = 0;
+     	}
+     	constraints_lowerbound[x_start] = x;
+     	constraints_lowerbound[y_start] = y;
+     	constraints_lowerbound[psi_start] = psi;
+     	constraints_lowerbound[v_start] = v;
+     	constraints_lowerbound[cte_start] = cte;
+     	constraints_lowerbound[epsi_start] = epsi;
+
+     	constraints_upperbound[x_start] = x;
+     	constraints_upperbound[y_start] = y;
+     	constraints_upperbound[psi_start] = psi;
+     	constraints_upperbound[v_start] = v;
+     	constraints_upperbound[cte_start] = cte;
+     	constraints_upperbound[epsi_start] = epsi;
+     ```
+
+   - Total cost and constraints equations
+
+     ```c++
+     class FG_eval {
+     public:
+
+     	// 参考路径方程的系数
+     	Eigen::VectorXd coeffs;
+     	FG_eval(Eigen::VectorXd coeffs) {
+     		this->coeffs = coeffs;
+     	}
+
+     	typedef CPPAD_TESTVECTOR(AD<double>)ADvector;
+
+     	// 该函数的目的是定义约束，fg向量包含的是总损失和约束，vars向量包含的是状态值和驱动器的输入
+     	void operator()(ADvector& fg, const ADvector& vars) {
+     		// 任何cost都会加到fg[0]
+     		fg[0] = 0;
+     		// 使车辆轨迹和参考路径的误差最小，且使车辆的速度尽量接近参考速度
+     		for (int t = 0; t < N; t++) {
+     			fg[0] += CppAD::pow(vars[cte_start + t], 2);
+     			fg[0] += CppAD::pow(vars[epsi_start + t], 2);
+     			fg[0] += CppAD::pow(vars[v_start + t] - ref_v, 2);
+     		}
+     		// 使车辆行驶更平稳，尽量减少每一次驱动器的输入大小
+     		// 注意：驱动器的输入是N-1个.最后一个点没有驱动器输入
+     		for (int t = 0; t < N - 1; t++) {
+     			fg[0] += CppAD::pow(vars[delta_start + t], 2);
+     			fg[0] += CppAD::pow(vars[a_start + t], 2);
+     		}
+     		// 为了使车辆运动更平滑，尽量减少相邻两次驱动器输入的差距
+     		// 注意：这个地方是N-2个
+     		for (int t = 0; t < N - 2; t++) {
+     			fg[0] += 600*CppAD::pow(vars[delta_start + t + 1] - vars[delta_start + t], 2);
+     			fg[0] += CppAD::pow(vars[a_start + t + 1] - vars[a_start + t], 2);
+     		}
+     		for (int t = 0; t < N - 2; t++) {
+     			fg[0] += 600*CppAD::pow(vars[delta_start + t + 1] - vars[delta_start + t], 2);
+     			fg[0] += CppAD::pow(vars[a_start + t + 1] - vars[a_start + t], 2);
+     		}
+
+     		// 设置fg的初始值为状态的初始值，这个地方为初始条件约束
+     		fg[1 + x_start] = vars[x_start];
+     		fg[1 + y_start] = vars[y_start];
+     		fg[1 + psi_start] = vars[psi_start];
+     		fg[1 + v_start] = vars[v_start];
+     		fg[1 + cte_start] = vars[cte_start];
+     		fg[1 + epsi_start] = vars[epsi_start];
+
+     		// 因为t=0初始条件约束已经有了，计算其他约束条件
+     		for (int t = 1; t < N; t++) {
+     			// t+1时刻的状态
+     			AD<double> x1 = vars[x_start + t];
+     			AD<double> y1 = vars[y_start + t];
+     			AD<double> psi1 = vars[psi_start + t];
+     			AD<double> v1 = vars[v_start + t];
+     			AD<double> cte1 = vars[cte_start + t];
+     			AD<double> epsi1 = vars[epsi_start + t];
+
+     			// t时刻的状态
+     			AD<double> x0 = vars[x_start + t - 1];
+     			AD<double> y0 = vars[y_start + t - 1];
+     			AD<double> psi0 = vars[psi_start + t - 1];
+     			AD<double> v0 = vars[v_start + t - 1];
+     			AD<double> cte0 = vars[cte_start + t - 1];
+     			AD<double> epsi0 = vars[epsi_start + t - 1];
+     			// t时刻的驱动器输入
+     			AD<double> delta0 = vars[delta_start + t - 1];
+     			AD<double> a0 = vars[a_start + t - 1];
+
+     			// t时刻参考路径的距离和角度值
+     			AD<double> f0 = coeffs[0] + coeffs[1] * x0 + coeffs[2]*x0*x0 + coeffs[3]*x0*x0*x0;
+     			AD<double> psides0 = CppAD::atan(coeffs[1]+2*coeffs[2]*x0 + 3 * coeffs[3]*x0*x0);
+
+     			// 根据如上的状态值计算约束条件
+     			fg[1 + x_start + t] = x1 - (x0 + v0 * CppAD::cos(psi0) * dt);
+     			fg[1 + y_start + t] = y1 - (y0 + v0 * CppAD::sin(psi0) * dt);
+     			fg[1 + psi_start + t] = psi1 - (psi0 + v0 * delta0 / Lf * dt);
+     			fg[1 + v_start + t] = v1 - (v0 + a0 * dt);
+     			fg[1 + cte_start + t] = cte1 - ((f0 - y0) + (v0 * CppAD::sin(epsi0) * dt));
+     			fg[1 + epsi_start + t] = epsi1 - ((psi0 - psides0) + v0 * delta0 / Lf * dt);
+     		}
+     	}
+     };
+     ```
+
+   - solve the optimizer problem
+
+     ```c++
+     // Object that computes objective and constraints
+     	FG_eval fg_eval(coeffs);
+
+     // options
+     std::string options;
+     options += "Integer print_level  0\n";
+     options += "Sparse  true        forward\n";
+     options += "Sparse  true        reverse\n";
+
+     // 计算这个问题
+     CppAD::ipopt::solve_result<Dvector> solution;
+     CppAD::ipopt::solve<Dvector, FG_eval>(options, vars, vars_lowerbound,
+                                           vars_upperbound, constraints_lowerbound, constraints_upperbound,
+                                           fg_eval, solution);
+     ```
+
+   - Passing the predicted result to the actuator and recursion to the next task.
+
+2. the reasoning behind the chosen *N* (timestep length) and *dt* (elapsed duration between timesteps) values. 
+
+   > A good approach to setting *N*, *dt*, and *T* is to first determine a reasonable range for *T* and then tune *dt* and *N* appropriately, keeping the effect of each in mind.
+
+   - T = dt**N,*N should be as large as possible, while *dt* should be as small as possible.in the case of driving a car, *T* should be a few seconds。
+
+   - *N* determines the number of variables optimized by the MPC,so too many points will increase the cost of computing。
+
+   -  Larger values of *dt* result in less frequent actuations, which makes it harder to accurately approximate a continuous reference trajectory。
+
+     the result of set dt=0.1 and N=20
+
+     ![](imgs/25.png)
+
+     correct result
+
+     ![](imgs/16.jpg)
+
+     ​
+
+3. implements Model Predictive Control that handles a 100 millisecond latency. 
+
+   > set　N = 20，dt = 0.05，so T=100ms
+
+   ```c++
+   size_t N = 20;
+   double dt = 0.05; // 50ms
+   ```
+
+   >Take the next value of the predicted result, mpc.latency=1
+
+   ```c++
+   double steer_value = result[2][mpc.latency];
+   double throttle_value = result[3][mpc.latency];
+   ```
+
+   > simulator lantency 
+
+   ```c++
+   this_thread::sleep_for(chrono::milliseconds(100));
+   ```
+
+
+
+
+
+
+
+
+
 简介
 
 1. 运动学模型：忽略了轮胎的力，重力和质量的影响。
@@ -43,8 +317,6 @@
     Eigen::VectorXd next_state(state.size());
     
     // the next state from inputs
-    // NOTE: state is [x, y, psi, v]
-    // NOTE: actuators is [delta, a]
     next_state[0] = state[0] + state[3]*cos(state[2])*dt;
     next_state[1] = state[1] + state[3]*sin(state[2])*dt;
     next_state[2] = state[2] + state[3]/Lf*actuators[0]*dt;
@@ -201,9 +473,7 @@
 
      ![](imgs/19.jpg)
 
-  解决行驶线路不平滑的问题：把车辆控制参数加入成本函数,两次控制的变化不能太大。
-
-  ![](imgs/20.jpg)
+- 解决行驶线路不平滑的问题：把车辆控制参数加入成本函数,两次控制的变化不能太大。 ![](imgs/20.jpg)
 
 - 预测线路区间T，由两部分组成N和dt，其中，N表示预测线路有多少个预测点，dt表示每一个预测点的执行的时间。例如：假设一共有20个预测点N=20，每个预测点的时间dt=0.5，则T为20x0.5=10秒。
 
